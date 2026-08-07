@@ -1,0 +1,6 @@
+arra of message
+dyctionary
+for loop 
+# This converts your strings into objects
+human_messages = [HumanMessage(content=q) for q in m1]
+
