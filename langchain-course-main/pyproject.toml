@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "my_agent_project"
+version = "0.1.0"
+dependencies = [
+    "langchain",
+    "langchain_community",
+    "langchain-openai",
+    "langgraph",
+    "langgraph-checkpoint-postgres",  # 👈 Add this line here
+    "fastapi",
+    "uvicorn",
+    "sqlalchemy",
+    "pgvector",
+    "psycopg",
+    "psycopg2-binary",
+    "python-dotenv",
+    "pypdf"
+]
