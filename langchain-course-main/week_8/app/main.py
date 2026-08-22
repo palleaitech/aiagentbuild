@@ -1,0 +1,36 @@
+# This wires up the FastAPI application, initializes database tables, and registers your routers.
+
+from fastapi import FastAPI
+from app.database import engine, Base, SessionLocal
+from app.models import chat, documents  # Ensures models register with Base
+from app.models.documents import DocumentChunkModel
+from app.services.rag_service import ingest_document
+from app.routers import chat as chat_router, planner as planner_router
+
+# Create database tables
+Base.metadata.create_all(bind=engine)
+
+app = FastAPI(title="Modular Multi-Agent-Worker-API", version="2.0")
+
+# Register Routers
+app.include_router(chat_router.router)
+app.include_router(planner_router.router)
+
+@app.on_event("startup")
+def startup_event():
+    db = SessionLocal()
+    try:
+        count = db.query(DocumentChunkModel).count()
+        if count == 0:
+            print("Database is empty. Automatically ingesting PDF document...")
+            ingest_document("agentic-ai-developer-bootcamp-curriculum.pdf")
+        else:
+            print(f"Database already contains {count} chunks. Skipping ingestion.")
+    except Exception as e:
+        print(f"Startup ingestion note: {e}")
+    finally:
+        db.close() 
+
+@app.get("/")
+def root():
+    return {"message": "Modular Agentic FastAPI Backend is running successfully!"}

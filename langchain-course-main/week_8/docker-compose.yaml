@@ -1,0 +1,51 @@
+services:
+  db:
+    image: ankane/pgvector:latest
+    container_name: postgres_vector_db
+    env_file:
+      - ../.env
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: pgadmin_gui
+    env_file:
+      - ../.env
+    ports:
+      - "5051:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      - db
+
+  web:
+    build:
+      context: ..
+      dockerfile: week_8/Dockerfile
+    container_name: agentic_fastapi_app
+    ports:
+      - "8000:8000"
+    env_file:
+      - ../.env
+    environment:
+      - PYTHONPATH=/workspace   # 👈 Add this line here
+    volumes:
+      - ../week_8:/workspace    # 👈 Make sure this points to /workspace matching your Dockerfile WORKDIR
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: always
+
+volumes:
+  pgdata:
+  pgadmin_data:
