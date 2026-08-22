@@ -1,0 +1,10 @@
+What “Ephemeral” Means
+Ephemeral state = temporary, short‑lived, tied to the current process or run.
+
+It exists only in RAM and is lost when:
+
+The process ends (you stop the Python app).
+
+The machine restarts.
+
+You don’t hold a reference to it anymore (garbage collection).

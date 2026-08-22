@@ -83,3 +83,21 @@ Open pgAdmin and navigate to your agent_db database.
 Expand Schemas -> public -> Tables -> chat_sessions.
 
 Right-click the table and select View/Edit Data -> All Rows to confirm your multi-agent conversation was successfully saved into the database!
+
+## docker
+How to Fix It:
+You need to enable the vector extension in PostgreSQL when the database initializes.
+
+If you have an initialization script:
+You can add an initialization SQL file, or manually enable it inside your running container once.
+
+Manually enable it via your terminal right now:
+While your containers are running (docker compose up), open a new terminal window and run the following command to connect to your Postgres container and enable the extension:
+Rebuild your Docker containers without cache:
+Because Docker caches Python package installations, you need to force it to pull and install the newly added dependency by running:
+
+Bash
+docker compose build --no-cache
+docker compose up
+docker exec -it postgres_vector_db psql -U postgres -d agent_db -c "CREATE EXTENSION IF NOT EXISTS vector;"
+docker compose restart

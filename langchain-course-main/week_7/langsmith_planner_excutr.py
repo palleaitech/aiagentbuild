@@ -1,115 +1,149 @@
-# Import required modules
-from langgraph.types import Command
-from langchain.tools import tool                     # Decorator to define custom tools callable by the agent
-from typing import Annotated, List, Optional, Optional, TypedDict              # For structured state typing
-import operator
-
-from langchain_core import documents                                      # Used to accumulate messages in state
-from langgraph.graph import StateGraph, START, END   # Core graph framework for agent workflow
-from langgraph.prebuilt import ToolNode, tools_condition  # Prebuilt tool execution + routing logic
-from langchain_openai import ChatOpenAI              # OpenAI LLM integration
-from langchain_core.messages import (SystemMessage, HumanMessage, AIMessage, ToolMessage, BaseMessage)
-from langgraph.checkpoint.memory import MemorySaver  # Checkpointer to persist agent state
-from dotenv import load_dotenv                       # Load environment variables from .env file
+# =====================================================================
+# Imports & Setup
+# =====================================================================
 import os
-# --- FastAPI Imports ---
-from fastapi import FastAPI
+import datetime
+import uuid
+import operator
+import traceback
+from typing import Annotated, List, Optional, TypedDict
+
+from fastapi import FastAPI, Depends, HTTPException
 from pydantic import BaseModel
-from typing import Optional, Annotated, TypedDict  # Ensure Optional is imported
 
 from sqlalchemy import create_engine, Column, String, Text, DateTime, Integer
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
-from fastapi import Depends, HTTPException
-import datetime
 
 from pgvector.sqlalchemy import Vector
-from langchain_openai import OpenAIEmbeddings
+
+from langchain.tools import tool
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_core.messages import SystemMessage, HumanMessage, BaseMessage
+from langchain_core.prompts import ChatPromptTemplate
+
+from langgraph.graph import StateGraph, START, END
+from langgraph.prebuilt import ToolNode, tools_condition
+from langgraph.types import interrupt, Command
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.postgres import PostgresSaver
 
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_core.prompts import ChatPromptTemplate
+
+from dotenv import load_dotenv
 import psycopg
-import uuid
-from langgraph.types import interrupt, Command
-from langgraph.checkpoint.postgres import PostgresSaver
-import traceback
 
+load_dotenv()
+api_key = os.getenv("OPENAI_API_KEY")
 
+if not api_key:
+    raise ValueError("OPENAI_API_KEY is not set in the environment variables.")
 
+# =====================================================================
+# Database Setup
+# =====================================================================
+database_url = os.getenv("DATABASE_URL")
+if not database_url:
+    raise ValueError("DATABASE_URL is not set in the environment variables.")
+
+engine = create_engine(database_url)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+class ChatSessionModel(Base):
+    __tablename__ = "chat_sessions"
+    thread_id = Column(String, primary_key=True, index=True)
+    user_prompt = Column(Text, nullable=False)
+    ai_response = Column(Text, nullable=False)
+    routed_worker = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+class DocumentChunkModel(Base):
+    __tablename__ = "document_chunks"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    content = Column(Text, nullable=False)
+    embedding = Column(Vector(3072), nullable=False)
+    source_file = Column(Text, nullable=True)
+
+Base.metadata.create_all(bind=engine)
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# =====================================================================
+# Tools Definition
+# =====================================================================
 @tool
 def search_internal_docs(query: str) -> str:
-  """
-    Search internal curriculum documents and guidelines using vector similarity.
-    """
+    """Search internal curriculum documents and guidelines using vector similarity."""
+    db = SessionLocal()
+    try:
+        embeddings = OpenAIEmbeddings(model="text-embedding-3-large", openai_api_key=api_key)
+        query_vector = embeddings.embed_query(query)  
+        result = db.query(DocumentChunkModel).order_by(DocumentChunkModel.embedding.cosine_distance(query_vector)).limit(50).all()
+        if not result:
+            return "No relevant documents found." 
+        return "\n\n".join(r.content for r in result)
+    finally:
+        db.close()
 
-  db = SessionLocal()
-  try:
-    embeddings = OpenAIEmbeddings(model="text-embedding-3-large", openai_api_key=api_key)
-    query_vector = embeddings.embed_query(query)  
-
-    # query pgvector for closest matching chunks using cosine similarity
-    result = db.query(DocumentChunkModel).order_by(DocumentChunkModel.embedding.cosine_distance(query_vector)).limit(50).all()
-
-    if not result:
-        return "No relevant documents found." 
-    return "\n\n".join(r.content for r in result)
-  finally:
-    db.close()
-
-# -------------------------------
-# Define tools (simple functions callable by the agent)
-# -------------------------------
 @tool
 def get_prime_minister_of_india() -> str:
-    """
-    Get the current Prime Minister of India.
-    """
+    """Get the current Prime Minister of India."""
     return "Narendra Modi"
 
 @tool
 def get_capital_of_country(country: str) -> str:
-    """
-    Get the capital of a given country.
-    """
+    """Get the capital of a given country."""
     capitals = {"france": "Paris", "india": "New Delhi"}
     return capitals.get(country.lower(), "Unknown")
 
 @tool
 def get_climate_of_country(country: str) -> str:
-    """
-    Get the climate of a given country.
-    """
-    climate_of_country = " coll and hot"
-    return climate_of_country 
+    """Get the climate of a given country."""
+    return "cool and hot" 
 
-# Collect all tools in a list for binding
 tools = [get_prime_minister_of_india, get_capital_of_country, get_climate_of_country, search_internal_docs]
 
-checkpointer = MemorySaver()
-
-# -------------------------------
-# Define agent state
-# -------------------------------
+# =====================================================================
+# Agent State Schema
+# =====================================================================
 class AgentState(TypedDict):
-    messages: Annotated[list[BaseMessage], operator.add]  # Holds conversation messages
-    city: str                                             # Example extra field
-    next_worker: str   # ✅ add this field
-    input: str                      # Original user request
-    plan: List[str]                 # Steps generated by the planner
-    current_step_index: int         # Tracks progress through the plan
-    execution_history: Annotated[List[str], operator.add] # Results of past steps
-    critique: str                   # Latest feedback from the critic
-    final_output: str               # Final synthesized answer    
+    messages: Annotated[list[BaseMessage], operator.add]
+    city: str
+    next_worker: str
+    input: str
+    plan: List[str]
+    current_step_index: int
+    execution_history: Annotated[List[str], operator.add]
+    critique: str
+    final_output: str    
+
+# =====================================================================
+# Planner-Executor-Critic Workflow Graph
+# =====================================================================
+def human_approval_node(state: AgentState):
+    human_decision = interrupt({
+        "plan": state.get("plan"),
+        "message": "Please review the plan. Resume with 'approved' or provide an updated list of steps."
+    })
+    
+    updated_plan = human_decision if isinstance(human_decision, list) and len(human_decision) > 0 else state.get("plan", [])
+    
+    return Command(
+        update={"plan": updated_plan},
+        goto="executor"
+    )
 
 def create_human_in_the_loop_graph(api_key, checkpointer):
-    # 1. Define nodes inside the scope
     def planner_node(state: AgentState):
         messages = state.get("messages", [])
-        if messages:
-            user_prompt = messages[-1].content
-        else:
-            user_prompt = state.get("input", "Perform the task.")
+        user_prompt = messages[-1].content if messages else state.get("input", "Perform the task.")
             
         prompt = ChatPromptTemplate.from_messages([
             ("system", "You are an expert planner. Break down the user's request into a short, concise sequential list of MAXIMUM 4 numbered steps."),
@@ -125,24 +159,11 @@ def create_human_in_the_loop_graph(api_key, checkpointer):
             "messages": [HumanMessage(content=f"Plan created with {len(steps)} steps.")]
         }
 
-    def human_approval_node(state: AgentState):
-        # interrupt() pauses here, and upon resume, returns whatever you passed in Command(resume=...)
-        human_decision = interrupt({
-            "plan": state.get("plan"),
-            "message": "Please review the plan. Resume with 'approved' or provide an updated list of steps."
-        })
-        
-        # If the user provided an updated list of steps, update the plan state
-        if isinstance(human_decision, list) and len(human_decision) > 0:
-            return {"plan": human_decision}
-            
-        # If the user approved (or passed "approved"), return state update to proceed
-        return {"plan": state.get("plan")}
-
     def executor_node(state: AgentState):
         current_index = state["current_step_index"]
         current_step = state["plan"][current_index] if current_index < len(state["plan"]) else "Finalize itinerary"
         critique = state.get("critique", "")
+        
         prompt = ChatPromptTemplate.from_messages([
             ("system", "You are a precise executor. Execute the current step. If there is critique/feedback from the critic, fix and adjust your output accordingly."),
             ("user", "Goal: {input}\nPlan: {plan}\nCurrent Step Index: {index}\nCurrent Step: {step}\nCritic Feedback: {critique}\nHistory: {history}")
@@ -161,9 +182,7 @@ def create_human_in_the_loop_graph(api_key, checkpointer):
 
     def critic_node(state: AgentState):
         history = state.get("execution_history", [])
-        
-        # Guard against empty history when first starting or resuming
-        if not history or len(history) == 0:
+        if not history:
             return {"critique": "APPROVED", "current_step_index": state.get("current_step_index", 0)}
         
         latest_execution = history[-1]
@@ -188,34 +207,55 @@ def create_human_in_the_loop_graph(api_key, checkpointer):
             return "finish"
         return "continue"
 
-    # 2. Assemble graph inside scope
+    def evaluation_node(state: AgentState):
+        """
+        Evaluates the final execution results and history to ensure 
+        high quality and strict alignment with the original user goal.
+        """
+        user_prompt = state.get("input", "")
+        history = state.get("execution_history", [])
+        final_summary = "\n".join(history) if history else "No execution history recorded."
+
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", "You are an objective AI response evaluator. Grade the execution history on a scale of 1-5 for accuracy, completeness, and helpfulness. Format your output as: SCORE: [1-5] | RATIONALE: [your brief note]"),
+            ("user", "Original Goal: {prompt}\nExecution History:\n{history}")
+        ])
+        
+        chain = prompt | ChatOpenAI(model_name="gpt-4o", temperature=0, openai_api_key=api_key)
+        evaluation_result = chain.invoke({"prompt": user_prompt, "history": final_summary})
+        
+        print(f"\n--- PLANNER EVALUATION REPORT ---\n{evaluation_result.content}\n-----------------------------------\n")
+        
+        return {"critique": evaluation_result.content}
+
     graph = StateGraph(AgentState)
     graph.add_node("planner", planner_node)
     graph.add_node("human_approval", human_approval_node)
     graph.add_node("executor", executor_node)
     graph.add_node("critic", critic_node)
+    graph.add_node("evaluator", evaluation_node)
     
     graph.add_edge(START, "planner")
     graph.add_edge("planner", "human_approval")
     graph.add_edge("human_approval", "executor")
     graph.add_edge("executor", "critic")
-    graph.add_conditional_edges("critic", should_continue, {"continue": "executor", "finish": END})
+    graph.add_conditional_edges("critic", should_continue, {"continue": "executor", "finish": "evaluator"})
+    # Evaluator is the final step before ending
+    graph.add_edge("evaluator", END)
 
     return graph.compile(checkpointer=checkpointer)
 
-# 1. Initialize your shared checkpointer first
-#checkpointer = MemorySaver()
-# (Or if you want PostgreSQL checkpointer, make sure your connection pool is open)
+# Shared Checkpointer (Can be toggled to PostgresSaver next)
+# Initialize PostgresSaver correctly using connection string
+# Open a connection with autocommit=True so DDL commands and concurrent indexes can run freely
+conn = psycopg.connect(database_url, autocommit=True)
+checkpointer = PostgresSaver(conn)
+checkpointer.setup()  # This will now create the internal tables without failing
+planner_app = create_human_in_the_loop_graph(api_key=api_key, checkpointer=checkpointer)
 
-# 2. Then call your factory function passing that checkpointer
-planner_app = create_human_in_the_loop_graph(
-    api_key=os.getenv("OPENAI_API_KEY"), 
-    checkpointer=checkpointer
-)
-
-# -------------------------------
-# Master Graph
-# -------------------------------
+# =====================================================================
+# Master Graph & Workers
+# =====================================================================
 def create_master_graph(api_key, workers: dict):
     llm = ChatOpenAI(model_name="gpt-4o", temperature=0.7, openai_api_key=api_key)
   
@@ -242,123 +282,76 @@ def create_master_graph(api_key, workers: dict):
     graph = StateGraph(AgentState)
     graph.add_node("master", master_router)
 
-    # Define wrapper nodes for workers to correctly pass state and return messages
     def make_worker_node(worker_app, worker_name):
         def worker_node(state: AgentState):
-            # Give the subgraph its own thread configuration so it doesn't collide with the master thread
             sub_config = {"configurable": {"thread_id": f"sub-{worker_name}"}}
-            
-            # Pass only the latest human message or the relevant message history to avoid duplication
             latest_message = state["messages"][-1]
-            
             result = worker_app.invoke({"messages": [latest_message]}, config=sub_config)
             return {"messages": result["messages"]}
         return worker_node
 
-    # Add worker nodes and their terminal edges once
     for name, worker in workers.items():
         graph.add_node(name, make_worker_node(worker, name))
         graph.add_edge(name, END)
     
-    # Edges: START → Master → Conditional Worker → END
     graph.add_edge(START, "master")
-    graph.add_conditional_edges(
-        "master", 
-        lambda state: state["next_worker"], 
-        list(workers.keys())
-    )
+    graph.add_conditional_edges("master", lambda state: state["next_worker"], list(workers.keys()))
 
     return graph.compile()
 
-# -------------------------------
-# Build the workflow graph
-# -------------------------------
-
 def create_worker_agent(api_key, tools):
-  llm_openai = ChatOpenAI(model_name="gpt-4o", temperature=0.7, openai_api_key=api_key).bind_tools(tools)
+    llm_openai = ChatOpenAI(model_name="gpt-4o", temperature=0.7, openai_api_key=api_key).bind_tools(tools)
 
-  def call_model(state: AgentState):
-      response = llm_openai.invoke(state["messages"])
-      return {"messages": [response]}  # ✅ Return raw response instead of wrapping in AIMessage(content=...)
+    def call_model(state: AgentState):
+        response = llm_openai.invoke(state["messages"])
+        return {"messages": [response]} 
 
-  workflow = StateGraph(AgentState)
-  workflow.add_node("agent", call_model)
-  workflow.add_node("tools", ToolNode(tools))
-  workflow.add_edge(START, "agent")
-  workflow.add_conditional_edges("agent", tools_condition)
-  workflow.add_edge("tools", "agent")
-  workflow.add_edge("agent", END)
+    workflow = StateGraph(AgentState)
+    workflow.add_node("agent", call_model)
+    workflow.add_node("tools", ToolNode(tools))
+    workflow.add_edge(START, "agent")
+    workflow.add_conditional_edges("agent", tools_condition)
+    workflow.add_edge("tools", "agent")
+    workflow.add_edge("agent", END)
 
-  checkpointer = MemorySaver()
-  return workflow.compile(checkpointer=checkpointer) # (Note: removed interrupt_before inside worker for clean master execution, or keep if needed)
-
-# =====================================================================
-# 4. RUNTIME EXECUTION SIMULATION
-# =====================================================================
-#if __name__ == "__main__":
-
-# Load environment variables (API key stored in .env file)
-load_dotenv()
-api_key = os.getenv("OPENAI_API_KEY")
-
-# # Validate API key presence
-if not api_key:
-  raise ValueError("OPENAI_API_KEY is not set in the environment variables.") 
-
-# Initialize the LLM (GPT-4o) with given parameters
-llm_openai = ChatOpenAI(model_name="gpt-4o", temperature=0.7, openai_api_key=api_key).bind_tools(tools)
+    return workflow.compile(checkpointer=MemorySaver())
 
 country_worker = create_worker_agent(api_key, [get_capital_of_country, get_climate_of_country])
 politics_worker = create_worker_agent(api_key, [get_prime_minister_of_india])
 rag_worker = create_worker_agent(api_key, [search_internal_docs])
 
 workers = {
-    "country_worker":country_worker,
-    "politics_worker":politics_worker,
-    "rag_worker":rag_worker
+    "country_worker": country_worker,
+    "politics_worker": politics_worker,
+    "rag_worker": rag_worker
 }
 
-master_graph  = create_master_graph(api_key, workers)
+master_graph = create_master_graph(api_key, workers)
 
-database_url = os.getenv("DATABASE_URL")
-engine = create_engine(database_url)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
-
-# Define the table structure for chat sessions
-class ChatSessionModel(Base):
-    __tablename__ = "chat_sessions"
-
-    thread_id = Column(String, primary_key=True, index=True)
-    user_prompt = Column(Text, nullable=False)
-    ai_response = Column(Text, nullable=False)
-    routed_worker = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
-
-# Automatically create the table in PostgreSQL
-Base.metadata.create_all(bind=engine)
-
-# Dependency to handle DB sessions cleanly in FastAPI
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-# create FastAPI app instance
-app = FastAPI(title="Multi-Agent-wroker_API", version="1.0")
-
+# =====================================================================
+# FastAPI Application & Endpoints
+# =====================================================================
+app = FastAPI(title="Multi-Agent-Worker-API", version="1.0")
 
 class QueryRequest(BaseModel):
     prompt: str
     thread_id: Optional[str] = "default-session"
 
+class TaskRequest(BaseModel):
+    goal: str
+    city: Optional[str] = "Chennai"
+
+class ResumeRequest(BaseModel):
+    thread_id: str
+    updated_plan: Optional[List[str]] = None
+
+class ChatUpdateRequest(BaseModel):
+    new_response: str
+
 @app.on_event("startup")
 def startup_event():
     db = SessionLocal()
     try:
-        # Check if chunks already exist; if not, ingest automatically on startup
         count = db.query(DocumentChunkModel).count()
         if count == 0:
             print("Database is empty. Automatically ingesting PDF document...")
@@ -370,23 +363,6 @@ def startup_event():
     finally:
         db.close() 
 
-# 1. Initialize your shared checkpointer
-checkpointer = MemorySaver()
-
-# Define the request body schema
-class TaskRequest(BaseModel):
-    goal: str
-    city: Optional[str] = "Chennai"
-
-# 2. Compile your Planner-Executor-Critic graph
-# planner_app = create_planner_executor_graph(api_key=os.getenv("OPENAI_API_KEY"), checkpointer=checkpointer)
-# 3. Add the API endpoint
-
-
-# Database connection string
-# DB_URI = "postgresql://postgres:password@postgres_vector_db:5432/agent_db" # Update with your actual credentials
-#db_url = os.getenv("DB_URI")
-db_url = "postgresql://postgres:venkatpalle@db:5432/agent_db"
 @app.post("/run-planner-agent")
 async def run_planner_agent(request: TaskRequest):
     try:
@@ -402,20 +378,12 @@ async def run_planner_agent(request: TaskRequest):
             "final_output": ""
         }
         
-        # Generate a unique thread ID for every request to avoid key collisions
         thread_id = f"planner-session-{uuid.uuid4().hex[:8]}"
-        config = {
-            "configurable": {"thread_id": thread_id},
-            "recursion_limit": 50  # Increase this to give the loop more breathing room
-        }
+        config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 50}
 
-        # Run the in-memory graph
         planner_app.invoke(initial_state, config=config)
-
-        # Inspect current state after pause
         state = planner_app.get_state(config)
         
-        # If the graph has pending nodes (like 'executor')
         if state.next:
             return {
                 "status": "paused_for_approval",
@@ -425,113 +393,54 @@ async def run_planner_agent(request: TaskRequest):
                 "message": "Plan generated successfully. Review the plan and call /resume-planner-agent with this thread_id to proceed."
             }
 
-        return {
-            "status": "completed",
-            "thread_id": thread_id,
-            "result": state.values
-        }
-
+        return {"status": "completed", "thread_id": thread_id, "result": state.values}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-
-
-def human_approval_node(state: AgentState):
-    human_decision = interrupt({
-        "plan": state.get("plan"),
-        "message": "Please review the plan. Resume with 'approved' or provide an updated list of steps."
-    })
-    
-    # Determine the plan based on human input
-    updated_plan = human_decision if isinstance(human_decision, list) and len(human_decision) > 0 else state.get("plan", [])
-    
-    # 👈 Use Command(goto=...) to explicitly force the graph to transition to the executor node
-    return Command(
-        update={
-            "plan": updated_plan,
-            "current_step_index": 0
-        },
-        goto="executor"
-    )
-
-
-class ResumeRequest(BaseModel):
-    thread_id: str
-    updated_plan: Optional[List[str]] = None  # Allow the user to modify the plan if needed
 
 @app.post("/resume-planner-agent")
 async def resume_planner_agent(request: ResumeRequest):
     try:
-        config = {
-            "configurable": {"thread_id": request.thread_id},
-            "recursion_limit": 50
-        }
-
+        config = {"configurable": {"thread_id": request.thread_id}, "recursion_limit": 50}
         resume_value = request.updated_plan if (request.updated_plan and request.updated_plan != ["string"]) else "approved"
 
-        # 1. Invoke the graph with the Command object to execute the next steps
         planner_app.invoke(Command(resume=resume_value), config=config)
-
-        # 2. Retrieve the definitive current state of the graph after execution finishes
         final_state_snapshot = planner_app.get_state(config)
 
-        return {
-            "status": "completed",
-            "thread_id": request.thread_id,
-            "result": final_state_snapshot.values
-        }
-
+        return {"status": "completed", "thread_id": request.thread_id, "result": final_state_snapshot.values}
     except Exception as e:
-        print("\n--- CRASH TRACEBACK ---")
         traceback.print_exc()
-        print("-----------------------\n")
         raise HTTPException(status_code=500, detail=str(e))
-        
 
 @app.post("/chat")
 def chat_endpoint(request: QueryRequest, db: Session = Depends(get_db)): 
-    #try:
-        config = {"configurable": {"thread_id": request.thread_id}}
-        
-        # Invoke the compiled master graph
-        result = master_graph.invoke(
-            {"messages": [HumanMessage(content=request.prompt)]}, 
-            config=config
-        )
-        
-        routed_worker = result.get("next_worker")
-        ai_response = result["messages"][-1].content
-        
-        # ✅ SAVING TO POSTGRESQL (The missing piece)
-        db_session_entry = ChatSessionModel(
-            thread_id=request.thread_id,
-            user_prompt=request.prompt,
-            ai_response=ai_response,
-            routed_worker=routed_worker
-        )
-        db.merge(db_session_entry)
-        db.commit()
-        
-        return {
-            "status": "success",
-            "thread_id": request.thread_id,
-            "question": request.prompt,
-            "routed_worker": routed_worker,
-            "response": ai_response
-        }
-    # except Exception as e:
-    #     db.rollback() # Rollback transaction if something crashes
-    #     print(f"\n[ERROR CRASH]: {str(e)}\n")
-    #     raise HTTPException(status_code=500, detail=str(e))
+    config = {"configurable": {"thread_id": request.thread_id}}
+    result = master_graph.invoke({"messages": [HumanMessage(content=request.prompt)]}, config=config)
+    
+    routed_worker = result.get("next_worker")
+    ai_response = result["messages"][-1].content
+    
+    db_session_entry = ChatSessionModel(
+        thread_id=request.thread_id,
+        user_prompt=request.prompt,
+        ai_response=ai_response,
+        routed_worker=routed_worker
+    )
+    db.merge(db_session_entry)
+    db.commit()
+    
+    return {
+        "status": "success",
+        "thread_id": request.thread_id,
+        "question": request.prompt,
+        "routed_worker": routed_worker,
+        "response": ai_response
+    }
 
-# 1. READ: Get a specific chat session by thread_id
 @app.get("/chats/{thread_id}")
 def get_chat_session(thread_id: str, db: Session = Depends(get_db)):
     session_record = db.query(ChatSessionModel).filter(ChatSessionModel.thread_id == thread_id).first()
-    
     if not session_record:
         raise HTTPException(status_code=404, detail="Chat session not found.")
-        
     return {
         "thread_id": session_record.thread_id,
         "user_prompt": session_record.user_prompt,
@@ -540,56 +449,34 @@ def get_chat_session(thread_id: str, db: Session = Depends(get_db)):
         "created_at": session_record.created_at
     }
 
-# 2. UPDATE: Modify an existing chat session's prompt or response
-class ChatUpdateRequest(BaseModel):
-    new_response: str
-
 @app.put("/chats/{thread_id}")
 def update_chat_session(thread_id: str, request: ChatUpdateRequest, db: Session = Depends(get_db)):
     session_record = db.query(ChatSessionModel).filter(ChatSessionModel.thread_id == thread_id).first()
-    
     if not session_record:
         raise HTTPException(status_code=404, detail="Chat session not found.")
     
     session_record.ai_response = request.new_response
     db.commit()
-    
     return {"status": "success", "message": f"Session {thread_id} updated successfully."}
 
-# 3. DELETE: Remove a chat session from PostgreSQL
 @app.delete("/chats/{thread_id}")
 def delete_chat_session(thread_id: str, db: Session = Depends(get_db)):
     session_record = db.query(ChatSessionModel).filter(ChatSessionModel.thread_id == thread_id).first()
-    
     if not session_record:
         raise HTTPException(status_code=404, detail="Chat session not found.")
     
     db.delete(session_record)
     db.commit()
-    
     return {"status": "success", "message": f"Chat session {thread_id} deleted successfully."}
 
-class DocumentChunkModel(Base):
-    __tablename__ = "document_chunks"  # 👈 Fixed typo (__tablename__ instead of __table_name__)
-    
-    id = Column(Integer, primary_key=True, autoincrement=True)  # Ensure Integer or matching type
-    content = Column(Text, nullable=False)
-    embedding = Column(Vector(3072), nullable=False)  # 👈 Changed to 3072 to match text-embedding-3-large
-    source_file = Column(Text, nullable=True)
-
-# Automatically create the new table in PostgreSQL
-Base.metadata.create_all(bind=engine)
-
+# =====================================================================
+# Document Ingestion Helper
+# =====================================================================
 def ingest_document(pdf_path: str):
-    """
-    Load a PDF, split it into chunks, embed each chunk, and save to PostgreSQL.
-    """
-
-    # Load the PDF
+    """Load a PDF, split it into chunks, embed each chunk, and save to PostgreSQL."""
     loader = PyPDFLoader(pdf_path)
     docs = loader.load()
 
-    # Split documents into chunks
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
     chunks = text_splitter.split_documents(docs)
     db = SessionLocal()
@@ -597,43 +484,23 @@ def ingest_document(pdf_path: str):
     try:
         embeddings = OpenAIEmbeddings(model="text-embedding-3-large", openai_api_key=api_key)
 
-        for i, chunk in enumerate(chunks):
-          vector = embeddings.embed_query(chunk.page_content)
-
-          doc_entry = DocumentChunkModel(
-              content=chunk.page_content,
-              embedding=vector,
-              source_file=os.path.basename(pdf_path)
-          )
-          db.add(doc_entry)
+        for chunk in chunks:
+            vector = embeddings.embed_query(chunk.page_content)
+            doc_entry = DocumentChunkModel(
+                content=chunk.page_content,
+                embedding=vector,
+                source_file=os.path.basename(pdf_path)
+            )
+            db.add(doc_entry)
     
         db.commit()
         print(f"Successfully ingested {len(chunks)} chunks from {pdf_path}")
     finally:
-      db.close()
-
-#=====================================================================================================#
-# running as normal python file, not as FastAPI server, so we can ingest a sample document for testing
-#=====================================================================================================#
-if __name__ == "__main__":
-    # for docker compose, we can use a relative path to the PDF file in the same directory as this script
-    ingest_document("agentic-ai-developer-bootcamp-curriculum.pdf")
-    print("Test document successfully added to PostgreSQL!")  
-
-    # To view the actual text chunks and their corresponding embedding vectors stored in your PostgreSQL database
-    db = SessionLocal()
-    try:
-        # Fetch all stored document chunks from PostgreSQL
-        chunks = db.query(DocumentChunkModel).all()
-        print(f"Total chunks found in database: {len(chunks)}\n")
-        
-        for chunk in chunks:
-            print(f"--- Chunk ID: {chunk.id} | Source: {chunk.source_file} ---")
-            print(f"Content Preview: {chunk.content[:150]}...")
-            print(f"Vector Embedding Length: {len(chunk.embedding)} dimensions")
-            print(f"First 5 vector values: {chunk.embedding[:5]}\n")
-    finally:
         db.close()
+
+if __name__ == "__main__":
+    ingest_document("agentic-ai-developer-bootcamp-curriculum.pdf")
+    print("Test document successfully added to PostgreSQL!")
 
 # uvicorn 1-rag-psql-pgvector:app --reload
 # uvicorn planner_excutr:app --reload
@@ -803,7 +670,11 @@ DEBUGGING:pgAdmin
 
 // TROUBLESHOOT
 if fast api is not opening
+run query at agent_db in pgadmin
 pgadmin - CREATE EXTENSION IF NOT EXISTS vector;
+alternatively, you can run the following command in your terminal to create the vector extension inside your PostgreSQL container:
+docker exec -it postgres_vector_db psql -U postgres -d agent_db -c "CREATE EXTENSION IF NOT EXISTS vector;"
+
 
 if planner-session is not appearing
     Open pgAdmin (http://localhost:5051).
@@ -829,5 +700,32 @@ sqlalchemy.exc.ProgrammingError: (psycopg2.errors.UndefinedObject) type "vector"
 How to Fix It:
 You need to run the SQL command to create the vector extension inside your PostgreSQL container.
 docker exec -it postgres_vector_db psql -U postgres -d agent_db -c "CREATE EXTENSION IF NOT EXISTS vector;"  
+
+uv.lck: generation
+uv pip compile pyproject.toml --output-file uv.lock
+
+agentic_fastapi_app  | sqlalchemy.exc.ProgrammingError: (psycopg2.errors.UndefinedObject) type "vector" does not exist
+agentic_fastapi_app  | LINE 5:  embedding VECTOR(3072) NOT NULL,
+agentic_fastapi_app  |                    ^
+agentic_fastapi_app  |
+agentic_fastapi_app  | [SQL:
+agentic_fastapi_app  | CREATE TABLE document_chunks (
+agentic_fastapi_app  |  id SERIAL NOT NULL,
+agentic_fastapi_app  |  content TEXT NOT NULL,
+agentic_fastapi_app  |  embedding VECTOR(3072) NOT NULL,
+agentic_fastapi_app  |  source_file TEXT,
+agentic_fastapi_app  |  PRIMARY KEY (id)
+agentic_fastapi_app  | )
+agentic_fastapi_app  |
+agentic_fastapi_app  | ]
+agentic_fastapi_app  | (Background on this error at: https://sqlalche.me/e/20/f405)
+postgres_vector_db   |          id SERIAL NOT NULL,
+postgres_vector_db   |          content TEXT NOT NULL,
+postgres_vector_db   |          embedding VECTOR(3072) NOT NULL,
+postgres_vector_db   |          source_file TEXT,
+postgres_vector_db   |          PRIMARY KEY (id)
+
+That error happens because you ran docker compose down -v earlier, which wiped out your PostgreSQL database volume. When the database was recreated fresh, the pgvector extension was not enabled inside PostgreSQL yet, so when SQLAlchemy tried to create the document_chunks table with a VECTOR(3072) column, PostgreSQL didn't recognize what VECTOR was.
+docker exec -it postgres_vector_db psql -U postgres -d agent_db -c "CREATE EXTENSION IF NOT EXISTS vector;"
 
 """

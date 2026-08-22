@@ -1,0 +1,21 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies, including libpq required for psycopg
+RUN apt-get update && apt-get install -y \
+    curl \
+    libpq-dev \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir uv
+
+COPY pyproject.toml uv.lock ./
+RUN uv pip install --system -r pyproject.toml
+
+COPY . .
+
+EXPOSE 8000
+
+CMD ["uvicorn", "langsmith_planner_excutr:app", "--host", "0.0.0.0", "--port", "8000"]
