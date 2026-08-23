@@ -1,4 +1,11 @@
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: redis_broker
+    ports:
+      - "6379:6379"
+    restart: always
+
   db:
     image: ankane/pgvector:latest
     container_name: postgres_vector_db
@@ -38,12 +45,35 @@ services:
       - ../.env
     environment:
       - PYTHONPATH=/workspace   # 👈 Add this line here
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
     volumes:
       - ../week_8:/workspace    # 👈 Make sure this points to /workspace matching your Dockerfile WORKDIR
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_started
+    restart: always
+
+  celery_worker:
+    build:
+      context: ..
+      dockerfile: week_8/Dockerfile
+    container_name: celery_worker_app
+    command: python -m celery -A app.celery_app.celery_app worker --loglevel=info
+    volumes:
+      - ../week_8:/workspace
+    env_file:
+      - ../.env
+    environment:
+      - PYTHONPATH=/workspace
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    depends_on:
+      - redis
+      - db
     restart: always
 
 volumes:

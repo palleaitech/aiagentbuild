@@ -1,6 +1,6 @@
 # This wires up the FastAPI application, initializes database tables, and registers your routers.
 
-from fastapi import FastAPI
+from fastapi import FastAPI, BackgroundTasks
 from app.database import engine, Base, SessionLocal
 from app.models import chat, documents  # Ensures models register with Base
 from app.models.documents import DocumentChunkModel
@@ -16,20 +16,24 @@ app = FastAPI(title="Modular Multi-Agent-Worker-API", version="2.0")
 app.include_router(chat_router.router)
 app.include_router(planner_router.router)
 
-@app.on_event("startup")
-def startup_event():
+def startup_ingestion_task():
     db = SessionLocal()
     try:
         count = db.query(DocumentChunkModel).count()
         if count == 0:
-            print("Database is empty. Automatically ingesting PDF document...")
+            print("Database is empty. Automatically ingesting PDF document in background...")
             ingest_document("agentic-ai-developer-bootcamp-curriculum.pdf")
         else:
             print(f"Database already contains {count} chunks. Skipping ingestion.")
     except Exception as e:
         print(f"Startup ingestion note: {e}")
     finally:
-        db.close() 
+        db.close()
+
+@app.on_event("startup")
+def startup_event(background_tasks: BackgroundTasks = BackgroundTasks()):
+    # Queue PDF ingestion as a background task on startup
+    background_tasks.add_task(startup_ingestion_task)
 
 @app.get("/")
 def root():

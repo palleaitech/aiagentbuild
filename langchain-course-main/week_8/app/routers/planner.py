@@ -2,13 +2,15 @@
 
 import uuid
 import traceback
-from fastapi import APIRouter, HTTPException
+import httpx
+from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from typing import Optional, List
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 from langgraph.checkpoint.postgres import PostgresSaver
 import psycopg
+from app.celery_app import run_planner_celery_task
 
 from app.config import OPENAI_API_KEY, DATABASE_URL
 from app.agents.planner_graph import create_human_in_the_loop_graph
@@ -25,13 +27,55 @@ planner_app = create_human_in_the_loop_graph(api_key=OPENAI_API_KEY, checkpointe
 class TaskRequest(BaseModel):
     goal: str
     city: Optional[str] = "Chennai"
+    webhook_url: Optional[str] = None
+    execution_engine: Optional[str] = "background"  # 👈 Choose between "background" or "celery"
 
 class ResumeRequest(BaseModel):
     thread_id: str
     updated_plan: Optional[List[str]] = None
 
+def run_planner_in_background(thread_id: str, initial_state: dict, webhook_url: Optional[str] = None):
+    """Executes the planner graph asynchronously and fires a webhook on completion."""
+    try:
+        config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 50}
+        planner_app.invoke(initial_state, config=config)
+        state = planner_app.get_state(config)
+        
+        # Safely handle state values without serialization errors
+        safe_messages = []
+        if state.values and "messages" in state.values:
+            for msg in state.values["messages"]:
+                content = getattr(msg, "content", str(msg))
+                safe_messages.append({"type": getattr(msg, "type", "unknown"), "content": content})
+
+        safe_values = state.values.copy() if state.values else {}
+        safe_values["messages"] = safe_messages
+
+        result_payload = {
+            "status": "paused_for_approval" if state.next else "completed",
+            "thread_id": thread_id,
+            "next_step": state.next,
+            "result": safe_values
+        }
+
+        if webhook_url:
+            with httpx.Client() as client:
+                client.post(webhook_url, json=result_payload, timeout=10.0)
+                print(f"Webhook successfully sent to {webhook_url}")
+                
+    except Exception as e:
+        error_payload = {"status": "error", "thread_id": thread_id, "detail": str(e)}
+        print(f"Background planner task failed: {e}")
+        if webhook_url:
+            try:
+                with httpx.Client() as client:
+                    client.post(webhook_url, json=error_payload, timeout=10.0)
+            except Exception as webhook_err:
+                print(f"Failed to deliver error webhook: {webhook_err}")
+
+
 @router.post("/run-planner-agent")
-async def run_planner_agent(request: TaskRequest):
+async def run_planner_agent(request: TaskRequest, background_tasks: BackgroundTasks):
     try:
         initial_state = {
             "messages": [HumanMessage(content=request.goal)],
@@ -46,21 +90,34 @@ async def run_planner_agent(request: TaskRequest):
         }
         
         thread_id = f"planner-session-{uuid.uuid4().hex[:8]}"
-        config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 50}
 
-        planner_app.invoke(initial_state, config=config)
-        state = planner_app.get_state(config)
-        
-        if state.next:
+        # 🔀 Pluggable Routing based on user choice
+        if request.execution_engine == "celery":
+            task = run_planner_celery_task.delay(
+                thread_id=thread_id, 
+                goal=request.goal, 
+                city=request.city, 
+                webhook_url=request.webhook_url
+            )
             return {
-                "status": "paused_for_approval",
+                "status": "queued_via_celery",
+                "task_id": task.id,
                 "thread_id": thread_id,
-                "next_step": state.next,
-                "generated_plan": state.values.get("plan"),
-                "message": "Plan generated successfully. Review the plan and call /resume-planner-agent with this thread_id to proceed."
+                "message": "Task handed off to Redis/Celery worker cluster."
             }
-
-        return {"status": "completed", "thread_id": thread_id, "result": state.values}
+        else:
+            # Fallback to your working FastAPI BackgroundTasks
+            background_tasks.add_task(
+                run_planner_in_background,
+                thread_id=thread_id,
+                initial_state=initial_state,
+                webhook_url=request.webhook_url
+            )
+            return {
+                "status": "accepted_via_background_tasks",
+                "thread_id": thread_id,
+                "message": "Task running in local FastAPI background thread."
+            }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
