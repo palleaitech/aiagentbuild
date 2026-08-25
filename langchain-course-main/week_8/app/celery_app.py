@@ -1,6 +1,6 @@
 import os
 from celery import Celery
-from app.config import DATABASE_URL, OPENAI_API_KEY
+from app.config import DATABASE_URL
 from app.agents.planner_graph import create_human_in_the_loop_graph
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.postgres import PostgresSaver
@@ -32,7 +32,8 @@ def run_planner_celery_task(self, thread_id: str, goal: str, city: str, webhook_
         checkpointer = PostgresSaver(conn)
         checkpointer.setup()
 
-        planner_app = create_human_in_the_loop_graph(api_key=OPENAI_API_KEY, checkpointer=checkpointer)
+        # Instantiated cleanly without hardcoded API keys; relies on get_llm() factory inside planner_graph
+        planner_app = create_human_in_the_loop_graph(checkpointer=checkpointer)
 
         initial_state = {
             "messages": [HumanMessage(content=goal)],

@@ -1,11 +1,10 @@
 # Step 4: Create app/services/rag_service.py
-# Let's also pull out your document ingestion tool and helper function so your business logic is cleanly separated.
+# Business logic for loading PDFs, chunking, embedding, and storing in PostgreSQL.
 
 import os
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings
-from app.config import OPENAI_API_KEY, DATABASE_URL
 from app.database import SessionLocal
 from app.models.documents import DocumentChunkModel
 
@@ -23,7 +22,14 @@ def ingest_document(pdf_path: str):
     db = SessionLocal()
 
     try:
-        embeddings = OpenAIEmbeddings(model="text-embedding-3-large", openai_api_key=OPENAI_API_KEY)
+        # Dynamically fetch the API key supporting both key standards
+        api_key = os.getenv("OPENAI_API_KEY")
+
+        # Keep OpenAI embeddings aligned with your vector store dimensions
+        embeddings = OpenAIEmbeddings(
+            model=os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-large"), 
+            openai_api_key=api_key
+        )
 
         for chunk in chunks:
             vector = embeddings.embed_query(chunk.page_content)
@@ -41,5 +47,3 @@ def ingest_document(pdf_path: str):
         db.rollback()
     finally:
         db.close()
-
-        

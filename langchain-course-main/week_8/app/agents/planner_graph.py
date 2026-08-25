@@ -2,10 +2,13 @@
 
 from langchain_core.messages import HumanMessage
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_openai import ChatOpenAI
+# from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, START, END
 from langgraph.types import interrupt, Command
 from app.agents.workers import AgentState
+from app.core.llm import get_llm
+
+llm = get_llm(tier="reasoning", temperature=0.7)
 
 def human_approval_node(state: AgentState):
     human_decision = interrupt({
@@ -20,7 +23,7 @@ def human_approval_node(state: AgentState):
         goto="executor"
     )
 
-def create_human_in_the_loop_graph(api_key: str, checkpointer):
+def create_human_in_the_loop_graph(checkpointer):
     def planner_node(state: AgentState):
         messages = state.get("messages", [])
         user_prompt = messages[-1].content if messages else state.get("input", "Perform the task.")
@@ -29,7 +32,7 @@ def create_human_in_the_loop_graph(api_key: str, checkpointer):
             ("system", "You are an expert planner. Break down the user's request into a short, concise sequential list of MAXIMUM 4 numbered steps."),
             ("user", "Goal: {input}")
         ])
-        chain = prompt | ChatOpenAI(model_name="gpt-4o", temperature=0, openai_api_key=api_key)
+        chain = prompt | llm
         response = chain.invoke({"input": user_prompt})
         steps = [line.strip() for line in response.content.strip().split("\n") if line.strip()]
         return {
@@ -48,7 +51,7 @@ def create_human_in_the_loop_graph(api_key: str, checkpointer):
             ("system", "You are a precise executor. Execute the current step. If there is critique/feedback from the critic, fix and adjust your output accordingly."),
             ("user", "Goal: {input}\nPlan: {plan}\nCurrent Step Index: {index}\nCurrent Step: {step}\nCritic Feedback: {critique}\nHistory: {history}")
         ])
-        chain = prompt | ChatOpenAI(model_name="gpt-4o", temperature=0, openai_api_key=api_key)
+        chain = prompt | llm
         response = chain.invoke({
             "input": state["input"],
             "plan": state["plan"],
@@ -70,7 +73,7 @@ def create_human_in_the_loop_graph(api_key: str, checkpointer):
             ("system", "You are a strict quality control critic. Evaluate if the latest execution step successfully accomplished its goal. Reply with 'APPROVED' if good, or provide feedback for correction."),
             ("user", "Goal: {input}\nLatest Execution: {execution}")
         ])
-        chain = prompt | ChatOpenAI(model_name="gpt-4o", temperature=0, openai_api_key=api_key)
+        chain = prompt | llm
         response = chain.invoke({
             "input": state.get("input", ""),
             "execution": latest_execution
@@ -97,7 +100,7 @@ def create_human_in_the_loop_graph(api_key: str, checkpointer):
             ("user", "Original Goal: {prompt}\nExecution History:\n{history}")
         ])
         
-        chain = prompt | ChatOpenAI(model_name="gpt-4o", temperature=0, openai_api_key=api_key)
+        chain = prompt | llm
         evaluation_result = chain.invoke({"prompt": user_prompt, "history": final_summary})
         
         print(f"\n--- PLANNER EVALUATION REPORT ---\n{evaluation_result.content}\n-----------------------------------\n")

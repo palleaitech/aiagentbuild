@@ -3,10 +3,14 @@
 from typing import TypedDict, Annotated, List
 import operator
 from langchain_core.messages import BaseMessage
-from langchain_openai import ChatOpenAI
+#from langchain_openai import ChatOpenAI
+# Ensure you are importing your actual custom tools correctly, e.g.:
+from app.agents.tools import search_internal_docs
 from langgraph.graph import StateGraph, START, END
 from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.checkpoint.memory import MemorySaver
+
+from app.core.llm import get_llm
 
 class AgentState(TypedDict):
     messages: Annotated[list[BaseMessage], operator.add]
@@ -19,8 +23,9 @@ class AgentState(TypedDict):
     critique: str
     final_output: str
 
-def create_worker_agent(api_key: str, tools: list):
-    llm_openai = ChatOpenAI(model_name="gpt-4o", temperature=0.7, openai_api_key=api_key).bind_tools(tools)
+def create_worker_agent(tools):
+    # Use summarization tier (or reasoning if tool execution requires strict OpenAI JSON-calling)
+    llm_openai = get_llm(tier="summarization", temperature=0.7).bind_tools(tools)
 
     def call_model(state: AgentState):
         response = llm_openai.invoke(state["messages"])

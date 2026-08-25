@@ -60,6 +60,9 @@ So translated to plain English, app.main:app means: "Go into the app folder, fin
 docker compose down -v
 docker compose build --no-cache
 docker compose up -d
+
+docker compose ps   # You can check the health and status of your running services with:
+
 -------------------------------------------------------------------------------------
 TROUBLE SHOOT:
 1. (base) PS E:\BuildAnAgent\langchain-course-main\week_8> docker compose up -d
@@ -129,7 +132,7 @@ Pass execution_engine: "celery": In your request body JSON, set the engine expli
 {
   "goal": "Write a step-by-step itinerary to explore historical locations in Chennai.",
   "city": "Chennai",
-  "webhook_url": "https://webhook.site/your-unique-token-here",
+  "webhook_url":  "https://webhook.site/7c8bc119-fb89-46f0-9a30-d9573ec0a6ca",
   "execution_engine": "celery"
 }
 
@@ -150,8 +153,29 @@ docker compose logs -f celery_worker
 
 
 --------------------------------------------------------------------------------------------------
+fastapi is not working:
+You can check the latest container logs by running this command in your terminal:
+docker compose logs fastapi
 
+-------------------------------------------------------------------------------------------------------
+How to ingest your PDF:
+You can quickly trigger the ingestion by running a small one-off python command or script inside your container.
 
+Run this command in your terminal to execute the ingestion function for that PDF:
 
+docker compose exec web python -c "from app.services.rag_service import ingest_document; ingest_document('agentic-ai-developer-bootcamp-curriculum.pdf')"
 
+-------------------------------------------------------------------------------------------------------
+Flower
+Using Flower for monitoring your Celery worker cluster is a fantastic choice. It gives you a real-time web-based dashboard (built on Tornado) where you can inspect task states, worker health, memory usage, execution times, and success/failure rates.
 
+Spin up the monitoring dashboard
+Rebuild and start your containers with the new service:
+docker compose up -d --build flower
+
+Access the Dashboard
+Once running, open your browser and navigate to:
+http://localhost:5555
+
+From there, you'll see a clean interface tracking your run_planner_celery_task executions, queue latencies, and worker node resource status in real time
+-------------------------------------------------------------------------------------------------------

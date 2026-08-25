@@ -8,24 +8,24 @@ from langchain_core.messages import HumanMessage
 
 from app.database import get_db
 from app.models.chat import ChatSessionModel
-from app.config import OPENAI_API_KEY
+# Removed OPENAI_API_KEY import from app.config
 from app.agents.tools import get_capital_of_country, get_climate_of_country, get_prime_minister_of_india, search_internal_docs
 from app.agents.workers import create_worker_agent
 from app.agents.master_graph import create_master_graph
 
 router = APIRouter(prefix="", tags=["Chat"])
 
-# Initialize workers and master graph for chat
-country_worker = create_worker_agent(OPENAI_API_KEY, [get_capital_of_country, get_climate_of_country])
-politics_worker = create_worker_agent(OPENAI_API_KEY, [get_prime_minister_of_india])
-rag_worker = create_worker_agent(OPENAI_API_KEY, [search_internal_docs])
+# Initialize workers and master graph dynamically without hardcoded API keys
+country_worker = create_worker_agent([get_capital_of_country, get_climate_of_country])
+politics_worker = create_worker_agent([get_prime_minister_of_india])
+rag_worker = create_worker_agent([search_internal_docs])
 
 workers = {
     "country_worker": country_worker,
     "politics_worker": politics_worker,
     "rag_worker": rag_worker
 }
-master_graph = create_master_graph(OPENAI_API_KEY, workers)
+master_graph = create_master_graph(workers)
 
 class QueryRequest(BaseModel):
     prompt: str
@@ -40,7 +40,12 @@ def chat_endpoint(request: QueryRequest, db: Session = Depends(get_db)):
     result = master_graph.invoke({"messages": [HumanMessage(content=request.prompt)]}, config=config)
     
     routed_worker = result.get("next_worker")
-    ai_response = result["messages"][-1].content
+    # Ensure ai_response is cleanly parsed as a string, handling lists/dicts if returned
+    raw_response = result["messages"][-1].content
+    if isinstance(raw_response, list):
+        ai_response = "".join([chunk.get("text", str(chunk)) if isinstance(chunk, dict) else str(chunk) for chunk in raw_response])
+    else:
+        ai_response = str(raw_response)
     
     db_session_entry = ChatSessionModel(
         thread_id=request.thread_id,
@@ -91,4 +96,3 @@ def delete_chat_session(thread_id: str, db: Session = Depends(get_db)):
     db.delete(session_record)
     db.commit()
     return {"status": "success", "message": f"Chat session {thread_id} deleted successfully."}
-

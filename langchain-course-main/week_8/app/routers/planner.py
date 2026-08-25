@@ -22,7 +22,7 @@ conn = psycopg.connect(DATABASE_URL, autocommit=True)
 checkpointer = PostgresSaver(conn)
 checkpointer.setup()
 
-planner_app = create_human_in_the_loop_graph(api_key=OPENAI_API_KEY, checkpointer=checkpointer)
+planner_app = create_human_in_the_loop_graph(checkpointer=checkpointer)
 
 class TaskRequest(BaseModel):
     goal: str

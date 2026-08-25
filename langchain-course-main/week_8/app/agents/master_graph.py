@@ -1,12 +1,14 @@
 # This handles master worker routing.
 
 from langchain_core.messages import SystemMessage, HumanMessage
-from langchain_openai import ChatOpenAI
+# from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, START, END
 from app.agents.workers import AgentState
 
-def create_master_graph(api_key: str, workers: dict):
-    llm = ChatOpenAI(model_name="gpt-4o", temperature=0.7, openai_api_key=api_key)
+from app.core.llm import get_llm
+
+def create_master_graph(workers):
+    llm = get_llm(tier="reasoning", temperature=0.7)
  
     def master_router(state: AgentState):
         user_prompt = state["messages"][-1].content
