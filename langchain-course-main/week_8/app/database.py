@@ -1,16 +1,23 @@
-# Step 2:This module sets up your SQLAlchemy engine, session maker, and base model class.
-
+# Step 2: This module sets up your SQLAlchemy engine, session maker, and base model class.
+import os
 from sqlalchemy import create_engine, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from app.config import DATABASE_URL
 
+# If pytest is running, force "localhost" instead of "db" in the connection string
+if "pytest" in os.environ.get("_", "") or os.getenv("PYTEST_CURRENT_TEST") or "PYTEST_VERSION" in os.environ:
+    DATABASE_URL = DATABASE_URL.replace("@db:", "@localhost:")
+
 engine = create_engine(DATABASE_URL)
 
-# 🛠️ Explicitly create the pgvector extension before creating tables
-with engine.connect() as connection:
-    connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
-    connection.commit()
+# 🛠️ Explicitly create the pgvector extension safely
+try:
+    with engine.connect() as connection:
+        connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
+        connection.commit()
+except Exception as e:
+    print(f"Warning: Could not initialize pgvector extension on startup: {e}")
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
@@ -21,7 +28,6 @@ def get_db():
         yield db
     finally:
         db.close()
-
 
 """
 The error type "vector" does not exist happens because even though you are using the ankane/pgvector image, PostgreSQL requires the vector 

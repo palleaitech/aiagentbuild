@@ -118,7 +118,7 @@ Use a mock webhook inspector (Great for testing!): If you want to actually see t
 {
   "goal": "Write a step-by-step itinerary to explore historical locations in Chennai.",
   "city": "Chennai",
-  "webhook_url": "https://webhook.site/7c8bc119-fb89-46f0-9a30-d9573ec0a6ca"
+  "webhook_url": "https://webhook.site/7c8bc119-fb89-46f0-9a30-d9573ec0a6ca",
 }
 
 ----------------------------------------------------------------------------------------
@@ -179,3 +179,24 @@ http://localhost:5555
 
 From there, you'll see a clean interface tracking your run_planner_celery_task executions, queue latencies, and worker node resource status in real time
 -------------------------------------------------------------------------------------------------------
+PyTest:
+
+We cannot run pytest directly inside the running Docker container (docker compose exec web pytest) for a couple of straightforward reasons:
+
+Not Installed in Production Containers: To keep container images lightweight and secure, test dependencies like pytest and httpx are typically excluded from production Dockerfiles. The container only contains what is strictly necessary to run the FastAPI application server (uvicorn).
+
+Missing Executable: Because pytest wasn't included during the image build or listed in the production runtime requirements, the container's shell throws the executable file not found in $PATH error.
+
+How to Run Tests Successfully Now
+Since running tests inside the container isn't set up out-of-the-box, the most practical approach is running pytest directly on your host machine (where you have Anaconda/Python and pytest installed), but targeting your local database configuration instead of Docker's internal "db" hostname.
+
+You can set your host environment variable to point to localhost and run your tests seamlessly:
+
+$env:DB_HOST="localhost"; pytest
+
+$env:DB_HOST="localhost"; $env:POSTGRES_USER="postgres"; $env:POSTGRES_PASSWORD="venkatpalle"; $env:POSTGRES_DB="agent_db"; pytest
+
+-------------------------------------------------------------------------------------------------------
+
+streamlit run streamlit_app.py
+

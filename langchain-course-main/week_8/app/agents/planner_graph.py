@@ -60,7 +60,7 @@ def create_human_in_the_loop_graph(checkpointer):
             "critique": critique,
             "history": state["execution_history"]
         })
-        result = f"Step {current_index}: {current_step} | Output: {response.content}"
+        result = f"{current_step} | Output: {response.content}"
         return {"execution_history": [result]}
 
     def critic_node(state: AgentState):
