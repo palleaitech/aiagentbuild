@@ -21,6 +21,11 @@ if app_mode == "Master-Worker Chat":
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
 
+    # Add a clear chat button in sidebar or header
+    if st.sidebar.button("🗑️ Clear Chat History"):
+        st.session_state.chat_history = []
+        st.rerun()
+
     # Display chat history
     for message in st.session_state.chat_history:
         with st.chat_message(message["role"]):
@@ -36,8 +41,7 @@ if app_mode == "Master-Worker Chat":
         with st.chat_message("assistant"):
             with st.spinner("Master agent is routing and thinking..."):
                 try:
-                    # Calls your FastAPI chat endpoint
-                    response = requests.post(f"{BACKEND_URL}/chat", json={"prompt": user_query}, timeout=30)
+                    response = requests.post(f"{BACKEND_URL}/chat", json={"prompt": user_query}, timeout=120)
                     if response.status_code == 200:
                         data = response.json()
                         reply = data.get("response", "No response content.")
@@ -65,6 +69,8 @@ elif app_mode == "Planner-Executor-Critic (HitL)":
         st.session_state.planner_status = "idle"
     if "current_plan" not in st.session_state:
         st.session_state.current_plan = []
+    if "result_data" not in st.session_state:
+        st.session_state.result_data = None
 
     goal_input = st.text_input("Enter your complex goal:", "Plan a 3-day itinerary for Chennai focusing on tech hubs and local food.")
     execution_engine = st.selectbox("Execution Engine", ["background", "celery"])
@@ -83,11 +89,8 @@ elif app_mode == "Planner-Executor-Critic (HitL)":
                     st.session_state.thread_id = data.get("thread_id")
                     st.success(f"Task started successfully! Thread ID: `{st.session_state.thread_id}`")
                     
-                    # Give background task a moment to hit the interrupt state
                     time.sleep(2.5)
                     
-                    # Fetch state or simulate review pause
-                    st.info("Task is now paused at the Human Approval node awaiting review.")
                     st.session_state.planner_status = "paused_for_approval"
                     st.session_state.current_plan = [
                         "Step 1: Research major IT parks in Taramani and OMR.",
@@ -100,7 +103,7 @@ elif app_mode == "Planner-Executor-Critic (HitL)":
             except Exception as e:
                 st.error(f"Error connecting to backend: {e}")
 
-    # If task is paused, show approval interface
+    # Show approval interface ONLY when paused
     if st.session_state.thread_id and st.session_state.planner_status == "paused_for_approval":
         st.markdown("---")
         st.subheader("🛑 Action Required: Review Generated Plan")
@@ -122,36 +125,9 @@ elif app_mode == "Planner-Executor-Critic (HitL)":
                         }
                         res = requests.post(f"{BACKEND_URL}/resume-planner-agent", json=resume_payload)
                         if res.status_code in [200, 201]:
-                            result_data = res.json()
-                            st.success("Workflow completed successfully!")
-                            
-                            st.markdown("### 📝 Final Execution Report")
-                            
-                            # Extract result content and format nicely as human-readable markdown
-                            result_content = result_data.get("result", {})
-                            if isinstance(result_content, dict):
-                                plan_steps = result_content.get("plan", [])
-                                if plan_steps:
-                                    st.markdown("#### 🗺️ Final Approved Plan")
-                                    for step in plan_steps:
-                                        st.markdown(f"- {step}")
-                                    st.markdown("---")
-                                
-                                exec_history = result_content.get("execution_history", [])
-                                if exec_history:
-                                    st.markdown("#### 🔍 Execution & Research Findings")
-                                    for item in exec_history:
-                                        st.markdown(f"> {item}")
-                                else:
-                                    messages = result_content.get("messages", [])
-                                    for msg in messages:
-                                        content = msg.get("content", "")
-                                        if content and len(content.strip()) > 10:
-                                            st.markdown(content)
-                            else:
-                                st.write(str(result_content))
-                                
+                            st.session_state.result_data = res.json()
                             st.session_state.planner_status = "completed"
+                            st.rerun()
                         else:
                             st.error(f"Failed to resume: {res.text}")
                     except Exception as e:
@@ -161,4 +137,32 @@ elif app_mode == "Planner-Executor-Critic (HitL)":
                 st.session_state.thread_id = None
                 st.session_state.planner_status = "idle"
                 st.session_state.current_plan = []
+                st.session_state.result_data = None
                 st.rerun()
+
+    # Display final results cleanly once completed
+    if st.session_state.planner_status == "completed" and st.session_state.result_data:
+        st.success("Workflow completed successfully!")
+        st.markdown("### 📝 Final Execution Report")
+        
+        result_content = st.session_state.result_data.get("result", {})
+        if isinstance(result_content, dict):
+            plan_steps = result_content.get("plan", [])
+            if plan_steps:
+                st.markdown("#### 🗺️ Final Approved Plan")
+                for step in plan_steps:
+                    st.markdown(f"- {step}")
+                st.markdown("---")
+            
+            exec_history = result_content.get("execution_history", [])
+            if exec_history:
+                st.markdown("#### 🔍 Execution & Research Findings")
+                for item in exec_history:
+                    st.markdown(f"> {item}")
+        
+        if st.button("🔄 Start New Plan"):
+            st.session_state.thread_id = None
+            st.session_state.planner_status = "idle"
+            st.session_state.current_plan = []
+            st.session_state.result_data = None
+            st.rerun()
