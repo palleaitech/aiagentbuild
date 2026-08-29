@@ -14,3 +14,10 @@ langchain-community: Contains various third-party integrations and utility tools
 
 Use uv init. It will set up your project structure, pyproject.toml, and handle your environment and dependencies automatically.
 langchain-core: While langchain depends on it, explicitly including it is a best practice. It contains the base abstractions (like Runnable and LCEL) that power the entire ecosystem and ensures version compatibility across your integrations.
+
+How LangSmith Works in Your Architecture
+Automatic Tracing: Because your master router, worker nodes, and planner-executor-critic loops are built using LangGraph, every API call to /chat or /run-planner-agent automatically sends deep execution traces to your LangSmith dashboard.
+
+Debugging Interrupts & Human-in-the-Loop: When your planner pauses at an interrupt() node awaiting human approval, LangSmith lets you inspect the exact state snapshot, memory thread ID, and input payloads leading right up to the interruption.
+
+Latency & Token Tracking: You can monitor token usage across your dynamic multi-provider LLM factory (OpenAI vs. Gemini tiers) and track how long individual worker node routing takes.

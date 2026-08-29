@@ -1,6 +1,7 @@
 # This wires up the FastAPI application, initializes database tables, and registers your routers.
 
 from fastapi import FastAPI, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
 from app.database import engine, Base, SessionLocal
 from app.models import chat, documents  # Ensures models register with Base
 from app.models.documents import DocumentChunkModel
@@ -11,6 +12,15 @@ from app.routers import chat as chat_router, planner as planner_router
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Modular Multi-Agent-Worker-API", version="2.0")
+
+# Configure CORS in FastAPI
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://localhost:8501"],  # Allows React (3000) and Streamlit (8501)
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all HTTP methods (GET, POST, etc.)
+    allow_headers=["*"],  # Allows all headers
+)
 
 # Register Routers
 app.include_router(chat_router.router)

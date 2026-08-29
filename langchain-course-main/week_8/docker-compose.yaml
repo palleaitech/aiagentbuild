@@ -85,6 +85,42 @@ services:
       - redis
       - celery_worker
 
+  streamlit:
+    build:
+      context: ..
+      dockerfile: week_8/Dockerfile
+    container_name: streamlit_ui
+    ports:
+      - "8501:8501"
+    env_file:
+      - ../.env
+    environment:
+      - PYTHONPATH=/workspace
+      - BACKEND_URL=http://agentic_fastapi_app:8000
+    volumes:
+      - ../week_8:/workspace
+    # 👇 Use direct python invocation with module flag
+    command: ["python", "-m", "streamlit", "run", "streamlit_app.py", "--server.address=0.0.0.0", "--server.port=8501"]
+    depends_on:
+      - web
+    restart: always
+
+  react_frontend:
+    image: node:20-alpine
+    container_name: react_app
+    ports:
+      - "3000:3000"
+    working_dir: /app
+    volumes:
+      - ./frontend_react:/app
+      - /app/node_modules
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    command: sh -c "npm install && npx vite --host 0.0.0.0 --port 3000"
+    depends_on:
+      - web
+    restart: always
+
 volumes:
   pgdata:
   pgadmin_data:

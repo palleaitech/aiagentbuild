@@ -1,9 +1,11 @@
 import streamlit as st
 import requests
 import time
+import os
 
 # FastAPI Backend URL
-BACKEND_URL = "http://localhost:8000"
+# 👇 Read from the environment variable set in docker-compose, falling back to localhost if run outside Docker
+BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
 
 st.set_page_config(page_title="Multi-Agent AI Studio", page_icon="🤖", layout="wide")
 

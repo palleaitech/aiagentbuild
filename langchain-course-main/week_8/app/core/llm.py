@@ -27,9 +27,13 @@ def get_llm(tier: str = "reasoning", temperature: float = 0.7):
 
     # Instantiate the requested model based on the explicit configuration
     if provider == "gemini":
-        return ChatGoogleGenerativeAI(
-            model=os.getenv("GEMINI_MODEL", "gemini-3.6-flash"),
-            google_api_key=os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"),
+        # return ChatGoogleGenerativeAI(
+        #     model=os.getenv("GEMINI_MODEL", "gemini-3.6-flash"),
+        #     google_api_key=os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"),
+        #     temperature=temperature
+        return ChatOpenAI(
+            model=os.getenv("OPENAI_MODEL", "gpt-4o"),
+            openai_api_key=os.getenv("OPENAI_API_KEY"),
             temperature=temperature
         )
     elif provider == "openai":

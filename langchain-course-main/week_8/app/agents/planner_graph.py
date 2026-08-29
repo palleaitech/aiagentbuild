@@ -29,7 +29,7 @@ def create_human_in_the_loop_graph(checkpointer):
         user_prompt = messages[-1].content if messages else state.get("input", "Perform the task.")
             
         prompt = ChatPromptTemplate.from_messages([
-            ("system", "You are an expert planner. Break down the user's request into a short, concise sequential list of MAXIMUM 4 numbered steps."),
+            ("system", "You are an expert travel and research planner. Break down the user's request into a comprehensive, detailed sequential list of 8 to 12 granular steps covering all days, hubs, and food locations."),
             ("user", "Goal: {input}")
         ])
         chain = prompt | llm

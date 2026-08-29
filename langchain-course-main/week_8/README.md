@@ -197,6 +197,59 @@ $env:DB_HOST="localhost"; pytest
 $env:DB_HOST="localhost"; $env:POSTGRES_USER="postgres"; $env:POSTGRES_PASSWORD="venkatpalle"; $env:POSTGRES_DB="agent_db"; pytest
 
 -------------------------------------------------------------------------------------------------------
+To bring up your Streamlit UI, open a new terminal window, navigate to your project directory where streamlit_app.py is located, and run:
 
 streamlit run streamlit_app.py
 
+---------------------------------------------------------------------------------------------------------
+FRONT END  -  REACT
+---------------------------------------------------------------------------------------------------------
+your-project-root/
+├── backend/                  # FastAPI backend (port 8000)
+├── streamlit_app.py          # Existing Streamlit UI (port 8501)
+└── frontend-react/           # New React App (port 3000)
+    ├── public/
+    ├── src/
+    │   ├── api/
+    │   │   └── client.js     # Axios configuration pointing to FastAPI
+    │   ├── components/
+    │   │   ├── ChatMode.jsx  # Master-Worker Chat interface
+    │   │   └── PlannerMode.jsx # Planner-Executor-Critic (HitL) interface
+    │   ├── App.jsx
+    │   ├── main.jsx
+    │   └── index.css
+    ├── package.json
+    └── vite.config.js
+
+
+=======================================================================================================
+Your entire microservice architecture is mapped out cleanly here:
+
+FastAPI Backend: Port 8000 (agentic_fastapi_app)
+
+PostgreSQL + pgvector: Port 5432 (postgres_vector_db)
+
+Redis Broker: Port 6379 (redis_broker)
+
+Celery Worker & Flower Monitoring: Port 5555 (week_8-flower-1)
+
+=======================================================================================================
+
+React Frontend Container (react_frontend): Runs on port 3000 (accessed via http://localhost:3000) for the Vite development server.
+
+FastAPI Backend Container: Runs on port 8000 (accessed via http://localhost:8000) for your API endpoints (/chat, /run-planner-agent, /resume-planner-agent).
+
+docker compose down -v
+docker compose build --no-cache
+docker compose up -d --build
+
+ docker compose restart react_frontend
+
+ docker compose logs -f <your_service_name>
+
+ ⚠️ Important Warning About -v
+docker compose down -v deletes all Docker volumes.
+
+If your vector database (postgres_vector_db) or document storage was persisted inside a Docker volume, this command completely wiped out all your ingested bootcamp documents and embeddings.
+
+This is likely why your RAG chat is now returning that it has no documentation available—the vector database is currently empty.

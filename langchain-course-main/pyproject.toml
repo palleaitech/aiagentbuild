@@ -18,5 +18,18 @@ dependencies = [
     "psycopg",
     "psycopg2-binary",
     "python-dotenv",
-    "pypdf"
+    "pypdf",
+    "celery>=5.3.0",
+    "redis>=5.0.0",
+    "langchain-google-genai>=1.0.0",
+    "streamlit"
 ]
+
+# 👇 Add this section for Pytest configuration
+[tool.pytest.ini_options]
+minversion = "6.0"
+addopts = "-ra -q"
+testpaths = [
+    "tests",
+]
+pythonpath = ["."]
