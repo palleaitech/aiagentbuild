@@ -4,14 +4,21 @@ import time
 import os
 
 # FastAPI Backend URL
-# 👇 Read from the environment variable set in docker-compose, falling back to localhost if run outside Docker
+# Read from environment variable set in docker-compose, falling back to localhost if run outside Docker
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
 
+# Set page config ONCE at the very top
 st.set_page_config(page_title="Multi-Agent AI Studio", page_icon="🤖", layout="wide")
 
-st.title("🤖 Modular Multi-Agent & Planner Studio")
 st.sidebar.title("Navigation")
-app_mode = st.sidebar.selectbox("Choose Mode", ["Master-Worker Chat", "Planner-Executor-Critic (HitL)"])
+app_mode = st.sidebar.selectbox(
+    "Choose Mode", 
+    [
+        "Master-Worker Chat", 
+        "Planner-Executor-Critic (HitL)", 
+        "Secure Knowledge RAG (Guardrails)"
+    ]
+)
 
 # -------------------------------------------------------------
 # MODE 1: MASTER-WORKER CHAT
@@ -23,17 +30,14 @@ if app_mode == "Master-Worker Chat":
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
 
-    # Add a clear chat button in sidebar or header
     if st.sidebar.button("🗑️ Clear Chat History"):
         st.session_state.chat_history = []
         st.rerun()
 
-    # Display chat history
     for message in st.session_state.chat_history:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-    # User input chat box
     user_query = st.chat_input("Type your message here...")
     if user_query:
         st.session_state.chat_history.append({"role": "user", "content": user_query})
@@ -64,7 +68,6 @@ elif app_mode == "Planner-Executor-Critic (HitL)":
     st.header("📋 Multi-Step Planner & Human Approval Studio")
     st.markdown("Submit a high-level goal. The Planner will break it down, pause for your review, and let you resume execution.")
 
-    # Initialize session states for thread management
     if "thread_id" not in st.session_state:
         st.session_state.thread_id = None
     if "planner_status" not in st.session_state:
@@ -105,7 +108,6 @@ elif app_mode == "Planner-Executor-Critic (HitL)":
             except Exception as e:
                 st.error(f"Error connecting to backend: {e}")
 
-    # Show approval interface ONLY when paused
     if st.session_state.thread_id and st.session_state.planner_status == "paused_for_approval":
         st.markdown("---")
         st.subheader("🛑 Action Required: Review Generated Plan")
@@ -142,7 +144,6 @@ elif app_mode == "Planner-Executor-Critic (HitL)":
                 st.session_state.result_data = None
                 st.rerun()
 
-    # Display final results cleanly once completed
     if st.session_state.planner_status == "completed" and st.session_state.result_data:
         st.success("Workflow completed successfully!")
         st.markdown("### 📝 Final Execution Report")
@@ -168,3 +169,44 @@ elif app_mode == "Planner-Executor-Critic (HitL)":
             st.session_state.current_plan = []
             st.session_state.result_data = None
             st.rerun()
+
+# -------------------------------------------------------------
+# MODE 3: SECURE KNOWLEDGE RAG (GUARDRAILS)
+# -------------------------------------------------------------
+elif app_mode == "Secure Knowledge RAG (Guardrails)":
+    st.header("🔒 Secure Knowledge Assistant")
+    st.markdown("Ask questions grounded in our verified documentation, protected by runtime guardrails.")
+
+    if "rag_messages" not in st.session_state:
+        st.session_state.rag_messages = []
+
+    for message in st.session_state.rag_messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    if rag_prompt := st.chat_input("Type your question here..."):
+        st.session_state.rag_messages.append({"role": "user", "content": rag_prompt})
+        with st.chat_message("user"):
+            st.markdown(rag_prompt)
+
+        with st.chat_message("assistant"):
+            with st.spinner("Analyzing request and checking security rails..."):
+                try:
+                    api_url = f"{BACKEND_URL}/api/secure-chat"
+                    response = requests.post(api_url, json={"query": rag_prompt}, timeout=15)
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        answer = data.get("response")
+                        status = data.get("status")
+                        
+                        st.markdown(answer)
+                        
+                        if status == "blocked_by_guardrail":
+                            st.caption("🛡️ *Note: This query was intercepted and blocked by the security guardrail.*")
+                            
+                        st.session_state.rag_messages.append({"role": "assistant", "content": answer})
+                    else:
+                        st.error(f"Server returned status code {response.status_code}")
+                except Exception as e:
+                    st.error(f"Failed to connect to backend service: {e}")

@@ -253,3 +253,12 @@ docker compose down -v deletes all Docker volumes.
 If your vector database (postgres_vector_db) or document storage was persisted inside a Docker volume, this command completely wiped out all your ingested bootcamp documents and embeddings.
 
 This is likely why your RAG chat is now returning that it has no documentation available—the vector database is currently empty.
+
+=======================================================================================================
+
+RAGAS
+Step 1: Install Ragas in Your Environment
+Since your dependencies are managed inside your container, let's verify if ragas is installed, or add it to your project requirements.
+
+docker compose exec web pip install ragas
+
