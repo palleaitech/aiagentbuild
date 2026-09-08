@@ -1,0 +1,49 @@
+# Step 4: Create app/services/rag_service.py
+# Business logic for loading PDFs, chunking, embedding, and storing in PostgreSQL.
+
+import os
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_openai import OpenAIEmbeddings
+from app.database import SessionLocal
+from app.models.documents import DocumentChunkModel
+
+def ingest_document(pdf_path: str):
+    """Load a PDF, split it into chunks, embed each chunk, and save to PostgreSQL."""
+    if not os.path.exists(pdf_path):
+        print(f"PDF path not found: {pdf_path}")
+        return
+
+    loader = PyPDFLoader(pdf_path)
+    docs = loader.load()
+
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+    chunks = text_splitter.split_documents(docs)
+    db = SessionLocal()
+
+    try:
+        # Dynamically fetch the API key supporting both key standards
+        api_key = os.getenv("OPENAI_API_KEY")
+
+        # Keep OpenAI embeddings aligned with your vector store dimensions
+        embeddings = OpenAIEmbeddings(
+            model=os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-large"), 
+            openai_api_key=api_key
+        )
+
+        for chunk in chunks:
+            vector = embeddings.embed_query(chunk.page_content)
+            doc_entry = DocumentChunkModel(
+                content=chunk.page_content,
+                embedding=vector,
+                source_file=os.path.basename(pdf_path)
+            )
+            db.add(doc_entry)
+    
+        db.commit()
+        print(f"Successfully ingested {len(chunks)} chunks from {pdf_path}")
+    except Exception as e:
+        print(f"Error during document ingestion: {e}")
+        db.rollback()
+    finally:
+        db.close()

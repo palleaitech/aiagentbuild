@@ -1,0 +1,140 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: redis_broker
+    ports:
+      - "6379:6379"
+    restart: always
+
+  db:
+    image: ankane/pgvector:latest
+    container_name: postgres_vector_db
+    env_file:
+      - ../.env
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: pgadmin_gui
+    env_file:
+      - ../.env
+    ports:
+      - "5051:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      - db
+
+  web:
+    build:
+      context: .
+      dockerfile: dockerfile
+    container_name: agentic_fastapi_app
+    ports:
+      - "8000:8000"
+    env_file:
+      - ../.env
+    environment:
+      - PYTHONPATH=/workspace   
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - LANGCHAIN_TRACING_V2=false
+      - LANGCHAIN_API_KEY=$${LANGCHAIN_API_KEY}   
+    volumes:
+      - .:/workspace    # 👈 Make sure this points to /workspace matching your Dockerfile WORKDIR
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: always
+
+  celery_worker:
+    build:
+      context: .
+      dockerfile: dockerfile
+    container_name: celery_worker_app
+    command: python -m celery -A app.celery_app.celery_app worker --loglevel=info
+    volumes:
+      - .:/workspace
+    env_file:
+      - ../.env
+    environment:
+      - PYTHONPATH=/workspace   
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - LANGCHAIN_TRACING_V2=false
+      - LANGCHAIN_API_KEY=""
+    depends_on:
+      - redis
+      - db
+    restart: always
+
+  flower:
+    image: mher/flower:latest
+    command: ["celery", "--broker=redis://redis:6379/0", "flower", "--port=5555"]
+    ports:
+      - "5555:5555"
+    depends_on:
+      - redis
+      - celery_worker
+
+  streamlit:
+    build:
+      context: .
+      dockerfile: dockerfile
+    container_name: streamlit_ui
+    ports:
+      - "8501:8501"
+    env_file:
+      - ../.env
+    environment:
+      - PYTHONPATH=/workspace
+      - BACKEND_URL=http://agentic_fastapi_app:8000
+    volumes:
+      - .:/workspace
+    # 👇 Use direct python invocation with module flag
+    command: ["python", "-m", "streamlit", "run", "streamlit_app.py", "--server.address=0.0.0.0", "--server.port=8501"]
+    depends_on:
+      - web
+    restart: always
+
+  react_frontend:
+    image: node:20-alpine
+    container_name: react_app
+    ports:
+      - "3000:3000"
+    working_dir: /app
+    volumes:
+      - ./frontend_react:/app
+      - /app/node_modules
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    command: sh -c "npm install && npx vite --host 0.0.0.0 --port 3000"
+    depends_on:
+      - web
+    restart: always
+
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   container_name: ollama_service
+  #   ports:
+  #     - "11434:11434"
+  #   volumes:
+  #     - ollama_data:/root/.ollama
+  #   restart: always
+
+volumes:
+  pgdata:
+  pgadmin_data:
+  #ollama_data:
