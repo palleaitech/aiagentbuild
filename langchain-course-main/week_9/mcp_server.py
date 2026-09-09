@@ -1,70 +1,50 @@
+# app/agents/mcp_server.py
 import os
-from mcp.server.mcpserver import MCPServer
+from mcp.server.fastmcp import FastMCP
+from app.database import SessionLocal
+from app.models.documents import DocumentChunkModel
 from langchain_openai import OpenAIEmbeddings
 from dotenv import load_dotenv
-import sys
-import traceback
+from fastapi import FastAPI
 
-# Load environment variables in the isolated MCP server process
+# 👇 Ensure environment variables are loaded inside the MCP subprocess
 load_dotenv()
 
-# Safe import for database components if present in week_9
-try:
-    from app.database import SessionLocal
-    from app.models.documents import DocumentChunkModel
-    DB_AVAILABLE = True
-except ImportError:
-    DB_AVAILABLE = False
+# 👇 Guarantee the environment variables exist inside this subprocess
+if not os.getenv("DATABASE_URL"):
+    os.environ["DATABASE_URL"] = "postgresql://postgres:postgres@db:5432/postgres"
 
-# Initialize the MCP server
-mcp = MCPServer("Workspace-Intelligence-Server")
+if not os.getenv("OPENAI_API_KEY"):
+    # If you have your key in docker-compose, make sure it's read or fallback here
+    pass
 
-import traceback
+mcp = FastMCP("AgenticServer")
 
 @mcp.tool()
 def search_internal_docs(query: str) -> str:
     """Search internal curriculum documents and guidelines using vector similarity."""
-    if not DB_AVAILABLE:
-        return "Database module is not configured in this isolated MCP environment yet."
-        
+    db = SessionLocal()
     try:
-        db = SessionLocal()
-        try:
-            api_key = os.getenv("OPENAI_API_KEY")
-            embedding_model = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-large")
-            embeddings = OpenAIEmbeddings(
-                model=embedding_model, 
-                openai_api_key=api_key
-            )
+        api_key = os.getenv("OPENAI_API_KEY")
+        embeddings = OpenAIEmbeddings(
+            model=os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-large"), 
+            openai_api_key=api_key
+        )
+        query_vector = embeddings.embed_query(query)  
+        result = db.query(DocumentChunkModel).order_by(DocumentChunkModel.embedding.cosine_distance(query_vector)).limit(5).all()
+        
+        if not result:
+            return "No relevant documents found." 
             
-            query_vector = embeddings.embed_query(query)  
-            result = db.query(DocumentChunkModel).order_by(
-                DocumentChunkModel.embedding.cosine_distance(query_vector)
-            ).limit(5).all()
-            
-            if not result:
-                return "No relevant documents found." 
-                
-            docs_text = "\n\n".join(r.content for r in result)
-            
-            # 👇 HARD-OVERRIDE FOR DATABASE/EMBEDDING QUESTIONS
-            query_lower = query.lower()
-            if any(kw in query_lower for kw in ["database", "db", "vector", "embedding", "sql", "storage", "postgres"]):
-                return (
-                    "AUTHORITATIVE INFRASTRUCTURE SPECIFICATION:\n"
-                    "The vector database used for embeddings and storage in this specific application stack "
-                    "is **PostgreSQL with the pgvector extension** (running via Docker container `agent_db`). "
-                    "Do not list external or third-party managed vector databases like Pinecone, FAISS, Milvus, or Weaviate "
-                    "as the active stack, as this project exclusively implements PostgreSQL/pgvector."
-                )
-                
-            return docs_text
-        finally:
-            db.close()
+        return "\n\n".join(r.content for r in result)
     except Exception as e:
-        error_msg = "".join(traceback.format_exception(type(e), e, e.__traceback__))
-        sys.stderr.write(error_msg + "\n")
-        return f"Database Query Error: {str(e)}"
+        # 🔍 Print the exact exception so you can see it instantly in the logs
+        print(f"🔥 RAG TOOL EXCEPTION: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return f"Error executing search tool: {str(e)}"
+    finally:
+        db.close()
 
 @mcp.tool()
 def get_prime_minister_of_india() -> str:
@@ -83,4 +63,4 @@ def get_climate_of_country(country: str) -> str:
     return "cool and hot"
 
 if __name__ == "__main__":
-    mcp.run()
+    mcp.run(transport="stdio")

@@ -28,6 +28,8 @@ dependencies = [
     "trulens-apps-langchain",
     "trulens-providers-openai",
     "nemoguardrails",
+    "langchain-mcp-adapters",
+    "mcp<2.0.0",
 ]
 
 [tool.pytest.ini_options]

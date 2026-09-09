@@ -1,5 +1,6 @@
-# This handles standard chat sessions, CRUD operations, and master routing.
-
+import os
+import asyncio
+from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional
@@ -8,31 +9,53 @@ from langchain_core.messages import HumanMessage
 
 from app.database import get_db
 from app.models.chat import ChatSessionModel
-# Removed OPENAI_API_KEY import from app.config
-from app.agents.tools import get_capital_of_country, get_climate_of_country, get_prime_minister_of_india, search_internal_docs
 from app.agents.workers import create_worker_agent
 from app.agents.master_graph import create_master_graph
 
+from langchain_mcp_adapters.client import MultiServerMCPClient
+
 router = APIRouter(prefix="", tags=["Chat"])
 
-# Initialize workers and master graph dynamically without hardcoded API keys
-country_worker = create_worker_agent([get_capital_of_country, get_climate_of_country])
-politics_worker = create_worker_agent([get_prime_minister_of_india])
-rag_worker = create_worker_agent(
-    [search_internal_docs],
-    system_prompt=(
-        "You are an expert technical and architecture assistant. "
-        "MANDATORY RULE: Whenever a user asks about databases, infrastructure, vector embeddings, or technical stacks, "
-        "you MUST call the `search_internal_docs` tool first. Never answer technical questions from your own memory."
-    )
-)
+master_graph = None
 
-workers = {
-    "country_worker": country_worker,
-    "politics_worker": politics_worker,
-    "rag_worker": rag_worker
-}
-master_graph = create_master_graph(workers)
+async def initialize_mcp_environment():
+    global mcp_client
+    server_script_path = str(Path(__file__).resolve().parent.parent.parent / "mcp_server.py")
+    
+    mcp_client = MultiServerMCPClient({
+        "agentic_server": {
+            "command": "python",
+            "args": [server_script_path],
+            "transport": "stdio",
+            # 👇 Pass the entire parent process environment (including Docker environment variables)
+            "env": dict(os.environ)
+        }
+    })
+    
+    mcp_tools = await mcp_client.get_tools()
+    # ... rest of your code
+    print("🛠️ DISCOVERED MCP TOOLS:", [t.name for t in mcp_tools])
+    
+    rag_tools = [t for t in mcp_tools if t.name == "search_internal_docs"]
+    other_tools = [t for t in mcp_tools if t.name != "search_internal_docs"]
+
+    country_worker = create_worker_agent(other_tools)
+    politics_worker = create_worker_agent(other_tools)
+    rag_worker = create_worker_agent(
+        rag_tools,
+        system_prompt=(
+            "You are an expert technical and architecture assistant. "
+            "MANDATORY RULE: Whenever a user asks about databases, infrastructure, vector embeddings, or technical stacks, "
+            "you MUST call the `search_internal_docs` tool first. Never answer technical questions from your own memory."
+        )
+    )
+
+    workers = {
+        "country_worker": country_worker,
+        "politics_worker": politics_worker,
+        "rag_worker": rag_worker
+    }
+    return create_master_graph(workers)
 
 class QueryRequest(BaseModel):
     prompt: str
@@ -42,13 +65,19 @@ class ChatUpdateRequest(BaseModel):
     new_response: str
 
 @router.post("/chat")
-def chat_endpoint(request: QueryRequest, db: Session = Depends(get_db)): 
+async def chat_endpoint(request: QueryRequest, db: Session = Depends(get_db)): 
+    global master_graph
+    if master_graph is None:
+        master_graph = await initialize_mcp_environment()
+
     config = {"configurable": {"thread_id": request.thread_id}}
-    result = master_graph.invoke({"messages": [HumanMessage(content=request.prompt)]}, config=config)
+    
+    # ⚡ MUST use ainvoke so async MCP tools execute correctly via ToolNode
+    result = await master_graph.ainvoke({"messages": [HumanMessage(content=request.prompt)]}, config=config)
     
     routed_worker = result.get("next_worker")
-    # Ensure ai_response is cleanly parsed as a string, handling lists/dicts if returned
     raw_response = result["messages"][-1].content
+    
     if isinstance(raw_response, list):
         ai_response = "".join([chunk.get("text", str(chunk)) if isinstance(chunk, dict) else str(chunk) for chunk in raw_response])
     else:
